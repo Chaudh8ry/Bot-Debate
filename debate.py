@@ -1,7 +1,8 @@
 import os
 import time
-from ollama import chat
+from prompts import bot1_prompt,bot2_prompt,judge_prompt,closing_prompt
 from openai import OpenAI
+import re # for searching
 from dotenv import load_dotenv # this pushes values into os.environ
 
 load_dotenv(override=True)
@@ -10,22 +11,8 @@ gemini_base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 gemini = OpenAI(api_key=gemini_api_key,base_url=gemini_base_url)
 
-# ollama_base_url = "http://localhost:11434/v1"
-# ollama = OpenAI(api_key='ollama',base_url=ollama_base_url)
-
 model_1 = "gemini-3.1-flash-lite"
 model_2 = "gemini-2.5-flash-lite"
-
-# Prompts for both the Model
-# Bot-1 : calm, logical, persuasive defender
-bot1_prompt = '''
-You are Bot-1, in a formal debate. Your role is to DEFEND the topic introduced by the Moderator. Speak in short, punchy sentences (3-4 maximum). Use a conversational, confident tone. You must directly address and dismantle the specific argument your opponent just made before pivoting to one strong defending point of your own. Avoid long introductions—jump straight into the clash.
-'''
-
-# Bot-2 : fiery, aggressive challenger
-bot2_prompt = '''
-You are Bot-2, in a formal debate. Your role is to ATTACK the topic introduced by the Moderator. Respond in short, sharp statements (2-3 sentences maximum). Be fiery, argumentative, and direct. You must aggressively tear down the specific logic your opponent just used in their last turn. Use rhetorical questions and bold claims to corner them. Keep replies concise but impactful, as if sparring in real time.
-'''
 
 # Get user Input
 print("AI Debate Simulator")
@@ -38,18 +25,19 @@ print("\n")
 # THE PRE-PROCESSOR: Translate raw input into a strict debate resolution
 print("Setting up the stage...")
 formulation_prompt = [
-    {"role": "system", "content": "You are a debate judge. Take the user's input and turn it into a controversial, definitive statement (a resolution) that can be clearly debated. Output ONLY the statement, nothing else. Example: If user says 'apples', you output 'Apples are the objectively superior fruit.'"},
+    {"role": "system", "content": "You are a debate judge.If a user put's a input that is not specific or kinda vague and cant be concluded what exactly to draw from this topic then turn the user input into a controversial, definitive statement (a resolution) that can be clearly debated. Output ONLY the statement, nothing else. Example: If user says 'apples', you output 'Apples are the objectively superior fruit.'"},
     {"role": "user", "content": user_topic}
 ]
 
 resolution_response = gemini.chat.completions.create(
-    model="gemini-3.1-flash-lite", # Use the faster model for this quick task
+    model="gemini-3.5-flash", # Use the faster model for this quick task
     messages=formulation_prompt
 )
 debate_resolution = resolution_response.choices[0].message.content.strip()
 
 print(f"Official Debate Resolution: {debate_resolution}\n")
 print("-" * 50 + "\n")
+
 
 # Introduce's a Moderator to start the debate, this wont be sent to LLM this is only for our local record
 # The Moderator
@@ -69,6 +57,10 @@ print('-' * 50 + "\n")
 
 # Conversation Loop
 loop_count = numbOfExchng
+
+# Tracking scoring of Bot's
+bot1_total = 0
+bot2_total = 0
 
 for i in range(loop_count):
     # BOT 1 start
@@ -97,7 +89,7 @@ for i in range(loop_count):
         if chunk.choices[0].delta.content is not None:
             text_chunk = chunk.choices[0].delta.content
             # time.sleep(0.3)
-            # Print without moving to a new line and force it to display immediately
+            # end="" means Print without moving to a new line and force it to display immediately
             print(text_chunk,end = "",flush=True)
             reply_1_full += text_chunk
 
@@ -137,6 +129,101 @@ for i in range(loop_count):
     print("\n\n")
     transcript.append({"speaker": "Bot 2", "text":reply_2_full})
 
+    # Judge's Turn 
+    last_two = transcript[-2:] #grabs only Bot 1 and Bot 2's last message
+    judge_input = f"Bot 1 said: {last_two[0]['text']} \n\nBot 2 said {last_two[1]['text']}"
+
+    judge_message = [
+        {"role": "system", "content": judge_prompt},
+        {"role": "user", "content": judge_input}
+    ]
+
+    judge_response = gemini.chat.completions.create(
+        model="gemini-3.5-flash",
+        messages=judge_message
+    )
+
+    verdict = judge_response.choices[0].message.content.strip()
+    print(f"Judge:\n{verdict}")
     print("-"*50 + "\n")
+
+    # Parse score to track total
+    # re.search() looks inside the string verdict for the pattern.
+    # Pattern breakdown:
+        # BOT 1 SCORE: → literal text it expects.
+        # \s* → zero or more whitespace characters (spaces, tabs, newlines).
+        # (\d+) → one or more digits, captured in a group.
+    b1 = re.search(r'BOT 1 SCORE:\s*(\d+)',verdict)
+    b2 = re.search(r'BOT 2 SCORE:\s*(\d+)',verdict)
+    # extract and add score
+    if b1:
+        bot1_total += int(b1.group(1))
+    if b2:
+        bot2_total += int(b2.group(1))
+
+
+# CLOSING ARGUMENTS
+print("=" * 50)
+print("CLOSING ARGUMENTS")
+print("=" * 50 + "\n")
+
+closing_prompt = "The debate is now over. Deliver your closing argument in exactly 5 sentences. Summarize your strongest points and why your side won."
+
+# Bot 1 closing
+messages_for_bot_1.append({"role": "user", "content": closing_prompt})
+closing_1 = gemini.chat.completions.create(
+    model=model_1,
+    messages=messages_for_bot_1,
+    stream=True
+)
+
+print("Bot 1 (Closing): ")
+closing_1_full = ""
+for chunk in closing_1:
+    if chunk.choices[0].delta.content is not None:
+        text_chunk = chunk.choices[0].delta.content
+        print(text_chunk, end="", flush=True)
+        closing_1_full += text_chunk
+print("\n\n")
+
+# Bot 2 closing
+messages_for_bot_2.append({"role": "user", "content": closing_prompt})
+closing_2 = gemini.chat.completions.create(  # switch ollama to gemini here
+    model=model_1,
+    messages=messages_for_bot_2,
+    stream=True
+)
+print("Bot 2 (Closing): ")
+closing_2_full = ""
+for chunk in closing_2:
+    if chunk.choices[0].delta.content is not None:
+        text_chunk = chunk.choices[0].delta.content
+        print(text_chunk, end="", flush=True)
+        closing_2_full += text_chunk
+print("\n\n")
+
+# FINAL VERDICT
+print("=" * 50)
+print("FINAL VERDICT")
+print("=" * 50 + "\n")
+
+final_judge_messages = [
+    {"role": "system", "content": "You are a debate judge delivering a final verdict."},
+    {"role": "user", "content": 
+        f"Total scores after {loop_count} rounds:\n"
+        f"Bot 1: {bot1_total} points\n"
+        f"Bot 2: {bot2_total} points\n\n"
+        f"Bot 1 closing: {closing_1_full}\n\n"
+        f"Bot 2 closing: {closing_2_full}\n\n"
+        f"Declare the overall winner with a 3-sentence justification."
+    }
+]
+
+final_verdict = gemini.chat.completions.create(
+    model="gemini-3.5-flash",
+    messages=final_judge_messages
+)
+print(f"⚖️  Final Verdict:\n{final_verdict.choices[0].message.content.strip()}")
+print("\nDebate Ended")
 
 print("Debate Ended")
